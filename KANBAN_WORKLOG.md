@@ -15,9 +15,9 @@ Supabase 프로젝트 ismhrkrkbvlbsxmwhvzb의 DB를 실제 GitHub Projects Board
 - Task assignee 관계: 26개
 - Milestone: CONES — FINAL SUBMISSION
 
-사용 테이블은 projects, statuses, tasks, users, milestones, task_assignees다. Issue state(open/closed)와 Project status는 서로 다른 값이므로 카드에 모두 표시한다.
+보드와 상세 조회에 projects, statuses, tasks, users, milestones, task_assignees, issue_details, issue_comments, issue_timeline_events, project_status_history, timeline_collection_requests를 사용한다. Issue state(open/closed)와 Project status는 서로 다른 값이므로 카드에 모두 표시한다.
 
-## 구현 범위
+## 기존 구현 범위
 
 - GitHub Projects와 유사한 어두운 상단 바, 프로젝트 헤더, Board/Table/Roadmap 탭
 - Todo / In Progress / Done 3개 컬럼
@@ -26,22 +26,35 @@ Supabase 프로젝트 ismhrkrkbvlbsxmwhvzb의 DB를 실제 GitHub Projects Board
 - 카드 상세 모달과 원본 GitHub Issue 링크
 - 카드 제목을 눌렀을 때 내부에서 열리는 GitHub Issue 스타일 상세 화면
 - 카드 drag and drop
-- live Supabase REST 조회와 snapshot fallback
-- 카드 이동 시 live 모드에서 tasks.status_id PATCH
+- live Supabase 조회와 snapshot fallback
+- 드래그 이동 후 API PATCH. Codex 업무는 공개 보드 정책으로 저장하고, GitHub task는 로그인된 이메일 allowlist 편집자만 `status_id`를 수정하도록 Auth/RLS 연결을 추가했다.
 
 ## 데이터 연결
 
-config.js는 사용자가 제공한 프로젝트 URL과 publishable key를 사용한다. publishable key는 브라우저에 노출 가능한 키이며 service_role/secret key는 사용하지 않는다.
+`config.js`는 CONES 프로젝트 `ismhrkrkbvlbsxmwhvzb` URL과 publishable key를 사용한다. publishable key는 브라우저에 노출 가능한 키이며 service_role/secret key는 프런트엔드나 저장소에 두지 않는다. 2026-10-15 기준 프로젝트가 `ACTIVE_HEALTHY`로 복구된 것을 확인했다.
 
-브라우저에서 Supabase REST 조회가 실패하면 data.json을 사용한다. snapshot은 같은 프로젝트에서 MCP로 읽어온 현재 데이터다.
+실제 DB에서 프로젝트 1개, 상태 3개, task 19개, 사용자 4명, 담당자 관계 26개, milestone 1개를 확인했다. 상세 테이블에는 issue_details 19개, issue_comments 15개, issue_timeline_events 194개, project_status_history 40개, timeline_collection_requests 19개가 있다. 브라우저에서 API 조회가 실패하면 data.json 스냅샷을 사용한다.
 
-현재 원본 DB에는 Issue 본문, 댓글, timeline, 상태 변경 이력 컬럼/테이블이 없다. 내부 상세 화면은 DB에 실제로 있는 상태, 담당자, milestone, issue state만 표시하고, 본문과 activity는 저장되지 않았다는 사실을 표시한다.
+DB의 기존 public 테이블은 RLS가 켜져 있고 anon/authenticated에는 읽기 정책이 있다. GitHub task 상태 업데이트는 Supabase Auth JWT와 `task_status_editors` 이메일 allowlist를 거치며, 권한은 `status_id` 컬럼에만 준다.
 
 ## 보안 메모
 
-현재 Supabase public 테이블 6개에 RLS가 비활성화되어 있다. 이 상태에서는 anon/publishable key를 가진 누구나 전체 행을 읽고 수정할 수 있다. 이번 작업에서는 사용자 요청 범위를 넘는 DB 보안 변경을 자동으로 실행하지 않았다.
+`codex_work_items`는 공개 팀 보드 정책으로 anon/authenticated 읽기·쓰기 권한을 받았다. `tasks` 변경은 신규 migration의 이메일 allowlist와 status_id 컬럼 권한으로 제한한다. allowlist에는 관리자가 등록한 이메일만 넣어야 한다.
 
-운영 배포 전에는 사용자 인증과 소유권 기준을 정한 뒤 RLS와 정책을 추가해야 한다. 정책 없이 RLS만 켜면 앱 읽기도 차단되므로, 접근 모델을 먼저 정하고 적용한다.
+비공개 팀 운영이 필요하면 사용자 인증·팀 멤버십 기준을 정하고 `codex_work_items` 정책을 제한해야 한다.
+
+## asps-5 백엔드 및 Codex 업무
+
+- `assignment.md`에 과제 범위와 완료 기준을 기록했다.
+- `server.mjs`가 같은 출처의 웹/API 서버로 보드 조회와 상태 수정을 제공한다.
+- `cli.mjs`가 보드 조회, Codex 업무 등록, 상태 변경을 제공한다.
+- `codex_work_items` 마이그레이션과 `.agents/skills/codex-kanban/SKILL.md`를 추가했다.
+- 기존 UI에 Codex 업무 카드를 포함한다. API는 실제 CONES 보드 테이블과 Codex 업무 테이블을 조회한다.
+- `codex_work_items` migration을 CONES DB에 적용했다.
+- `npm run cli -- list`와 `GET /api/board`로 기존 GitHub task 19개를 읽었다.
+- CLI로 `codex:1` 업무를 생성하고 `In Progress` → `Done`으로 변경했다. API GET 및 SQL 조회에서 최종 상태 `Done`을 확인했다.
+- 웹에서 Supabase Auth 매직 링크 로그인을 구현했고, 기존 task 상태 PATCH에 사용자 JWT를 전달한다. CLI는 `SUPABASE_ACCESS_TOKEN`으로 같은 인증 경로를 사용한다.
+- 새 migration은 만들었지만 현재 연결된 Supabase MCP 계정에는 `ismhrkrkbvlbsxmwhvzb` 프로젝트 접근 권한이 없어 원격 적용과 이메일 allowlist 등록은 남아 있다.
 
 ## 체크리스트
 
@@ -50,5 +63,9 @@ config.js는 사용자가 제공한 프로젝트 URL과 publishable key를 사�
 - [x] main에서 정적 Board 구현
 - [x] live REST / snapshot fallback 구현
 - [x] 검색, 필터, 정렬, 모달, drag and drop
-- [ ] Auth/RLS 기반 운영 보안
+- [ ] Auth/RLS 기반 운영 보안 모델
+- [x] 공유 DB 복구 후 연결 및 실제 스키마 확인
+- [x] codex_work_items 원격 마이그레이션 및 CLI/API 공유 등록
+- [x] 웹/CLI Auth JWT 전달, 이메일 allowlist RLS 및 status_id 전용 쓰기 migration 작성
+- [ ] CONES DB에 신규 migration 적용, redirect URL 설정, 허용 편집자 이메일 등록
 - [ ] Table/Roadmap 실제 뷰

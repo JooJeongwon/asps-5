@@ -6,6 +6,13 @@ const searchInput = $("#search-input");
 const filterPopover = $("#filter-popover");
 const assigneeFilter = $("#assignee-filter");
 const stateFilter = $("#state-filter");
+const authDialog = $("#auth-dialog");
+const authForm = $("#auth-form");
+const authEmail = $("#auth-email");
+const authMessage = $("#auth-message");
+const authStorageKey = "cones-board-auth";
+let authSession = null;
+let authUser = null;
 
 function escapeHtml(value) {
   return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) {
@@ -24,6 +31,75 @@ function avatar(user) {
 }
 function projectRepo() { return state.project && state.project.github_repo_full_name || "seune-h0203/cones"; }
 function issueUrl(task) { return task.issue_url || "https://github.com/" + projectRepo() + "/issues/" + task.github_issue_number; }
+function storeAuthSession(session) {
+  session.expires_at = session.expires_at || Math.floor(Date.now() / 1000) + Number(session.expires_in || 3600);
+  authSession = session;
+  sessionStorage.setItem(authStorageKey, JSON.stringify(session));
+}
+function clearAuthSession() {
+  authSession = null; authUser = null; sessionStorage.removeItem(authStorageKey); updateAuthButton();
+}
+async function authRequest(path, method, body, accessToken) {
+  const headers = { apikey: CONFIG.supabaseKey, "Content-Type": "application/json" };
+  if (accessToken) headers.Authorization = "Bearer " + accessToken;
+  const response = await fetch(String(CONFIG.supabaseUrl).replace(/\/$/, "") + "/auth/v1/" + path, { method: method || "GET", headers: headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await response.json().catch(function () { return {}; });
+  if (!response.ok) throw new Error(data.msg || data.message || data.error_description || "Authentication failed (" + response.status + ")");
+  return data;
+}
+async function currentAccessToken() {
+  if (!authSession) {
+    try { authSession = JSON.parse(sessionStorage.getItem(authStorageKey) || "null"); } catch { clearAuthSession(); }
+  }
+  if (!authSession) return null;
+  if (Number(authSession.expires_at || 0) * 1000 < Date.now() + 30000) {
+    try { storeAuthSession(await authRequest("token?grant_type=refresh_token", "POST", { refresh_token: authSession.refresh_token })); }
+    catch { clearAuthSession(); return null; }
+  }
+  return authSession.access_token || null;
+}
+function updateAuthButton() {
+  const button = $("#auth-button");
+  if (!button) return;
+  button.textContent = authUser ? "Sign out" : "Sign in";
+  button.setAttribute("aria-label", authUser ? "Sign out " + authUser.email : "Sign in to edit GitHub issue status");
+  button.title = authUser ? authUser.email : "GitHub Issue 상태 변경은 로그인이 필요합니다.";
+}
+async function initAuth() {
+  const callback = new URLSearchParams(location.hash.slice(1));
+  if (callback.get("access_token") && callback.get("refresh_token")) {
+    storeAuthSession({ access_token: callback.get("access_token"), refresh_token: callback.get("refresh_token"), expires_in: callback.get("expires_in"), expires_at: callback.get("expires_at") });
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  if (!authSession) {
+    try { authSession = JSON.parse(sessionStorage.getItem(authStorageKey) || "null"); } catch { clearAuthSession(); }
+  }
+  const accessToken = await currentAccessToken();
+  if (accessToken) {
+    try { authUser = await authRequest("user", "GET", undefined, accessToken); }
+    catch { clearAuthSession(); }
+  }
+  updateAuthButton();
+}
+function openAuthDialog() {
+  authMessage.textContent = "";
+  if (!authDialog.open) authDialog.showModal();
+  authEmail.focus();
+}
+async function sendLoginLink(event) {
+  event.preventDefault();
+  authMessage.textContent = "로그인 링크를 보내는 중…";
+  try {
+    await authRequest("otp?redirect_to=" + encodeURIComponent(location.origin + location.pathname), "POST", { email: authEmail.value.trim(), create_user: false });
+    authMessage.textContent = "메일을 확인하고 로그인 링크를 열어주세요. 링크를 열면 이 보드로 돌아옵니다.";
+  } catch (error) { authMessage.textContent = error.message; }
+}
+async function signOut() {
+  const token = await currentAccessToken();
+  if (token) await authRequest("logout?scope=local", "POST", {}, token).catch(function () {});
+  clearAuthSession();
+  showToast("Signed out.");
+}
 function formatDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" });
@@ -86,12 +162,18 @@ function unwrap(raw) {
     const user = usersById.get(row.user_id);
     if (user) assigneesByTask.set(row.task_id, (assigneesByTask.get(row.task_id) || []).concat(user));
   });
+  const statuses = (raw.statuses || []).sort(function (a, b) { return a.position - b.position; });
+  const tasks = (raw.tasks || []).map(function (task) { return Object.assign({}, task, { assignees: assigneesByTask.get(task.task_id) || [] }); });
+  (raw.codex_work_items || []).forEach(function (item) {
+    const status = statuses.find(function (entry) { return entry.status_name === item.status_name; });
+    tasks.push({ task_id: "codex:" + item.id, codex: true, codex_id: item.id, description: item.description, title: item.title, status_id: status && status.status_id, issue_state: "open", assignees: [] });
+  });
   return {
     project: (raw.projects || [])[0] || {},
-    statuses: (raw.statuses || []).sort(function (a, b) { return a.position - b.position; }),
+    statuses: statuses,
     users: raw.users || [],
     milestones: raw.milestones || [],
-    tasks: (raw.tasks || []).map(function (task) { return Object.assign({}, task, { assignees: assigneesByTask.get(task.task_id) || [] }); }),
+    tasks: tasks,
     issueDetails: raw.issue_details || [],
     issueComments: raw.issue_comments || [],
     issueTimelineEvents: raw.issue_timeline_events || [],
@@ -105,28 +187,9 @@ async function fetchSnapshot() {
   return unwrap(await response.json());
 }
 async function fetchLive() {
-  const base = String(CONFIG.supabaseUrl || "").replace(/\/$/, "");
-  if (!base || !CONFIG.supabaseKey) throw new Error("Supabase config missing");
-  const headers = { apikey: CONFIG.supabaseKey, Authorization: "Bearer " + CONFIG.supabaseKey };
-  const get = async function (table, query) {
-    const response = await fetch(base + "/rest/v1/" + table + "?" + query, { headers: headers });
-    if (!response.ok) throw new Error(table + ": " + response.status);
-    return response.json();
-  };
-  const results = await Promise.all([
-    get("projects", "select=*&order=project_id"),
-    get("statuses", "select=*&order=position"),
-    get("users", "select=*&order=user_id"),
-    get("milestones", "select=*&order=milestone_id"),
-    get("tasks", "select=*&order=status_id.asc,github_issue_number.asc"),
-    get("task_assignees", "select=*&order=task_id,user_id"),
-    get("issue_details", "select=*&order=task_id"),
-    get("issue_comments", "select=*&order=task_id,created_at"),
-    get("issue_timeline_events", "select=*&order=task_id,occurred_at"),
-    get("project_status_history", "select=*&order=task_id,occurred_at"),
-    get("timeline_collection_requests", "select=*&order=requested_issue_number")
-  ]);
-  return unwrap({ projects: results[0], statuses: results[1], users: results[2], milestones: results[3], tasks: results[4], task_assignees: results[5], issue_details: results[6], issue_comments: results[7], issue_timeline_events: results[8], project_status_history: results[9], timeline_collection_requests: results[10] });
+  const response = await fetch("/api/board");
+  if (!response.ok) throw new Error("Board API: " + response.status);
+  return unwrap(await response.json());
 }
 function applyData(data, live) {
   state.project = data.project; state.statuses = data.statuses; state.users = data.users; state.milestones = data.milestones; state.tasks = data.tasks; state.issueDetails = data.issueDetails; state.issueComments = data.issueComments; state.issueTimelineEvents = data.issueTimelineEvents; state.projectStatusHistory = data.projectStatusHistory; state.timelineCollectionRequests = data.timelineCollectionRequests; state.live = live;
@@ -155,7 +218,7 @@ function visibleTasks() {
     if (!query) return true;
     const text = [task.title, task.github_issue_number, task.issue_state].concat(task.assignees.map(function (user) { return user.github_username; })).join(" ").toLowerCase();
     return text.indexOf(query) !== -1;
-  }).sort(function (a, b) { return state.sort === "title" ? a.title.localeCompare(b.title, "ko") : a.github_issue_number - b.github_issue_number; });
+  }).sort(function (a, b) { return state.sort === "title" ? a.title.localeCompare(b.title, "ko") : (a.github_issue_number || Number.MAX_SAFE_INTEGER) - (b.github_issue_number || Number.MAX_SAFE_INTEGER); });
 }
 function render() {
   const tasks = visibleTasks();
@@ -172,7 +235,9 @@ function render() {
 }
 function renderCard(task) {
   const milestone = state.milestones.find(function (item) { return item.milestone_id === task.milestone_id; });
-  return '<article class="card" draggable="true" data-task-id="' + task.task_id + '" tabindex="0" aria-label="Issue #' + task.github_issue_number + ': ' + escapeHtml(task.title) + '"><button class="card-title" type="button" data-action="open-task" data-task-id="' + task.task_id + '">' + escapeHtml(task.title) + '</button><div class="card-meta"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span><span>#' + task.github_issue_number + "</span><span>· " + escapeHtml(projectRepo().split("/")[1]) + '</span></div><div class="card-footer">' + (milestone ? '<span class="milestone">' + escapeHtml(milestone.title) + "</span>" : "") + '<div class="assignees">' + task.assignees.slice(0, 3).map(avatar).join("") + "</div></div></article>";
+  const label = task.codex ? "Codex work" : "Issue #" + task.github_issue_number;
+  const meta = task.codex ? "<span>Codex</span><span>· shared work</span>" : '<span>#' + task.github_issue_number + "</span><span>· " + escapeHtml(projectRepo().split("/")[1]) + "</span>";
+  return '<article class="card" draggable="true" data-task-id="' + task.task_id + '" tabindex="0" aria-label="' + label + ': ' + escapeHtml(task.title) + '"><button class="card-title" type="button" data-action="open-task" data-task-id="' + task.task_id + '">' + escapeHtml(task.title) + '</button><div class="card-meta"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span>' + meta + '</div><div class="card-footer">' + (milestone ? '<span class="milestone">' + escapeHtml(milestone.title) + "</span>" : "") + '<div class="assignees">' + task.assignees.slice(0, 3).map(avatar).join("") + "</div></div></article>";
 }
 function updateFilterUi() {
   const active = Number(state.assignee !== "all") + Number(state.issueState !== "all") + Number(Boolean(state.query));
@@ -212,22 +277,35 @@ function openTask(taskId) {
   const milestone = state.milestones.find(function (item) { return item.milestone_id === task.milestone_id; });
   const details = state.issueDetails.find(function (item) { return String(item.task_id) === String(task.task_id); });
   const names = task.assignees.length ? task.assignees.map(function (user) { return escapeHtml(user.github_username); }).join(", ") : "Unassigned";
-  const issueLabel = task.issue_state === "closed" ? "Closed" : "Open";
-  $("#modal-root").innerHTML = '<div class="modal-backdrop"><article class="modal issue-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><p class="modal-kicker">Issue #' + task.github_issue_number + " · " + escapeHtml(projectRepo()) + '</p><h2 id="modal-title">' + escapeHtml(task.title) + '</h2><p class="issue-status"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span>' + issueLabel + '</p></div><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button></div><div class="issue-section"><h3>Description</h3><div class="issue-body markdown-body">' + renderMarkdown(details && details.body || "No description available for this issue.") + '</div></div><div class="issue-section"><h3>Activity</h3>' + renderActivity(task.task_id) + '</div><dl class="modal-details"><div class="detail-row"><dt>Project status</dt><dd>' + escapeHtml(status ? status.status_name : "Unknown") + '</dd></div><div class="detail-row"><dt>Assignees</dt><dd>' + names + '</dd></div><div class="detail-row"><dt>Milestone</dt><dd>' + escapeHtml(milestone ? milestone.title : "None") + '</dd></div></dl><div class="modal-actions"><a class="control-button" href="' + escapeHtml(issueUrl(task)) + '" target="_blank" rel="noreferrer">Open in GitHub ↗</a></div></article></div>';
+  const issueLabel = task.codex ? "Codex work" : task.issue_state === "closed" ? "Closed" : "Open";
+  const heading = task.codex ? "Shared team work · Codex" : "Issue #" + task.github_issue_number + " · " + escapeHtml(projectRepo());
+  const description = task.codex ? task.description : details && details.body || "No description available for this issue.";
+  const activity = task.codex ? '<p class="empty-detail">Registered by Codex CLI/API.</p>' : renderActivity(task.task_id);
+  const githubLink = task.codex ? "" : '<div class="modal-actions"><a class="control-button" href="' + escapeHtml(issueUrl(task)) + '" target="_blank" rel="noreferrer">Open in GitHub ↗</a></div>';
+  $("#modal-root").innerHTML = '<div class="modal-backdrop"><article class="modal issue-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><p class="modal-kicker">' + heading + '</p><h2 id="modal-title">' + escapeHtml(task.title) + '</h2><p class="issue-status"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span>' + issueLabel + '</p></div><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button></div><div class="issue-section"><h3>Description</h3><div class="issue-body markdown-body">' + renderMarkdown(description) + '</div></div><div class="issue-section"><h3>Activity</h3>' + activity + '</div><dl class="modal-details"><div class="detail-row"><dt>Project status</dt><dd>' + escapeHtml(status ? status.status_name : "Unknown") + '</dd></div><div class="detail-row"><dt>Assignees</dt><dd>' + names + '</dd></div><div class="detail-row"><dt>Milestone</dt><dd>' + escapeHtml(milestone ? milestone.title : "None") + '</dd></div></dl>' + githubLink + '</article></div>';
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
 async function persistStatus(task, previousStatusId) {
   if (!state.live) return;
-  const response = await fetch(String(CONFIG.supabaseUrl).replace(/\/$/, "") + "/rest/v1/tasks?task_id=eq." + encodeURIComponent(task.task_id), { method: "PATCH", headers: { apikey: CONFIG.supabaseKey, Authorization: "Bearer " + CONFIG.supabaseKey, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ status_id: task.status_id }) });
+  const status = state.statuses.find(function (item) { return item.status_id === task.status_id; });
+  const path = task.codex ? "/api/work-items/" + encodeURIComponent(task.codex_id) : "/api/tasks/" + encodeURIComponent(task.task_id) + "/status";
+  const body = task.codex ? { status_name: status.status_name } : { status_id: task.status_id };
+  const token = task.codex ? null : await currentAccessToken();
+  if (!task.codex && !token) throw new Error("Sign in to update GitHub Issue status.");
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = "Bearer " + token;
+  const response = await fetch(path, { method: "PATCH", headers: headers, body: JSON.stringify(body) });
   if (!response.ok) { task.status_id = previousStatusId; render(); throw new Error("status update failed"); }
 }
 function moveTask(taskId, statusId) {
   const task = state.tasks.find(function (item) { return String(item.task_id) === String(taskId); });
   if (!task || task.status_id === statusId) return;
+  if (!state.live) { showToast("Snapshot mode: changes are not saved."); return; }
+  if (!task.codex && !authUser) { showToast("Sign in before changing a GitHub Issue status."); openAuthDialog(); return; }
   const previousStatusId = task.status_id; task.status_id = statusId; render();
   const status = state.statuses.find(function (item) { return item.status_id === statusId; });
-  showToast("#" + task.github_issue_number + " moved to " + (status ? status.status_name : "new status"));
-  persistStatus(task, previousStatusId).catch(function () { showToast("Saved locally; Supabase update failed."); });
+  showToast((task.codex ? "Codex work" : "#" + task.github_issue_number) + " moved to " + (status ? status.status_name : "new status"));
+  persistStatus(task, previousStatusId).catch(function () { showToast("Could not save status change."); });
 }
 function handleAction(action, target) {
   if (action === "toggle-filter") { filterPopover.hidden = !filterPopover.hidden; target.setAttribute("aria-expanded", String(!filterPopover.hidden)); }
@@ -266,6 +344,10 @@ function bindEvents() {
 }
 async function init() {
   bindEvents();
+  $("#auth-button").addEventListener("click", function () { if (authUser) signOut(); else openAuthDialog(); });
+  $("#auth-cancel").addEventListener("click", function () { authDialog.close(); });
+  authForm.addEventListener("submit", sendLoginLink);
+  await initAuth();
   try {
     let data;
     try { data = await fetchLive(); applyData(data, true); }

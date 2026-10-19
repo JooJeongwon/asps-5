@@ -2,3 +2,9 @@
 skills-lock.json
 .DS_Store
 node_modules/
+backups/
+supabase/.temp/
+!.agents/
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/codex-kanban/
