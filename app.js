@@ -10,6 +10,10 @@ const authDialog = $("#auth-dialog");
 const authForm = $("#auth-form");
 const authEmail = $("#auth-email");
 const authMessage = $("#auth-message");
+const workItemDialog = $("#work-item-dialog");
+const workItemForm = $("#work-item-form");
+const workItemStatus = $("#work-item-status");
+const workItemMessage = $("#work-item-message");
 const authStorageKey = "cones-board-auth";
 let authSession = null;
 let authUser = null;
@@ -210,15 +214,50 @@ function renderAssigneeOptions() {
   assigneeFilter.innerHTML = '<option value="all">Everyone</option>' + state.users.map(function (user) { return '<option value="' + user.user_id + '">' + escapeHtml(user.github_username) + "</option>"; }).join("");
   assigneeFilter.value = state.assignee; stateFilter.value = state.issueState;
 }
+function openWorkItemDialog(statusName) {
+  if (!state.live) { showToast("Snapshot mode: new work is not saved."); return; }
+  workItemForm.reset();
+  workItemMessage.textContent = "";
+  workItemStatus.innerHTML = state.statuses.map(function (status) { return '<option value="' + escapeHtml(status.status_name) + '">' + escapeHtml(status.status_name) + "</option>"; }).join("");
+  workItemStatus.value = state.statuses.some(function (status) { return status.status_name === statusName; }) ? statusName : (state.statuses[0] || {}).status_name || "";
+  workItemDialog.showModal();
+  $("#work-item-title").focus();
+}
+async function createWorkItem(event) {
+  event.preventDefault();
+  const submit = $("#work-item-submit");
+  const status = state.statuses.find(function (item) { return item.status_name === workItemStatus.value; });
+  if (!status) { workItemMessage.textContent = "Choose a valid board status."; return; }
+  submit.disabled = true;
+  workItemMessage.textContent = "Saving to the shared board…";
+  try {
+    const response = await fetch("/api/work-items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: $("#work-item-title").value.trim(), description: $("#work-item-description").value, status_name: status.status_name })
+    });
+    const item = await response.json().catch(function () { return {}; });
+    if (!response.ok) throw new Error(item.error || "Could not save work item.");
+    state.tasks.push({ task_id: "codex:" + item.id, codex: true, codex_id: item.id, description: item.description, title: item.title, status_id: status.status_id, issue_state: "open", assignees: [] });
+    render();
+    workItemDialog.close();
+    workItemForm.reset();
+    showToast("CONES #" + item.id + " added to the shared board.");
+  } catch (error) {
+    workItemMessage.textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+}
 function visibleTasks() {
   const query = state.query.trim().toLowerCase();
   return state.tasks.filter(function (task) {
     if (state.assignee !== "all" && !task.assignees.some(function (user) { return String(user.user_id) === state.assignee; })) return false;
     if (state.issueState !== "all" && task.issue_state !== state.issueState) return false;
     if (!query) return true;
-    const text = [task.title, task.github_issue_number, task.issue_state].concat(task.assignees.map(function (user) { return user.github_username; })).join(" ").toLowerCase();
+    const text = [task.title, task.codex ? task.codex_id : task.github_issue_number, task.issue_state].concat(task.assignees.map(function (user) { return user.github_username; })).join(" ").toLowerCase();
     return text.indexOf(query) !== -1;
-  }).sort(function (a, b) { return state.sort === "title" ? a.title.localeCompare(b.title, "ko") : (a.github_issue_number || Number.MAX_SAFE_INTEGER) - (b.github_issue_number || Number.MAX_SAFE_INTEGER); });
+  }).sort(function (a, b) { return state.sort === "title" ? a.title.localeCompare(b.title, "ko") : ((a.codex ? a.codex_id : a.github_issue_number) || Number.MAX_SAFE_INTEGER) - ((b.codex ? b.codex_id : b.github_issue_number) || Number.MAX_SAFE_INTEGER); });
 }
 function render() {
   const tasks = visibleTasks();
@@ -235,8 +274,9 @@ function render() {
 }
 function renderCard(task) {
   const milestone = state.milestones.find(function (item) { return item.milestone_id === task.milestone_id; });
-  const label = task.codex ? "Codex work" : "Issue #" + task.github_issue_number;
-  const meta = task.codex ? "<span>Codex</span><span>· shared work</span>" : '<span>#' + task.github_issue_number + "</span><span>· " + escapeHtml(projectRepo().split("/")[1]) + "</span>";
+  const repo = escapeHtml(projectRepo().split("/")[1] || "CONES");
+  const label = task.codex ? "CONES #" + task.codex_id : "Issue #" + task.github_issue_number;
+  const meta = task.codex ? '<span>#' + task.codex_id + "</span><span>· " + repo + "</span>" : '<span>#' + task.github_issue_number + "</span><span>· " + repo + "</span>";
   return '<article class="card" draggable="true" data-task-id="' + task.task_id + '" tabindex="0" aria-label="' + label + ': ' + escapeHtml(task.title) + '"><button class="card-title" type="button" data-action="open-task" data-task-id="' + task.task_id + '">' + escapeHtml(task.title) + '</button><div class="card-meta"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span>' + meta + '</div><div class="card-footer">' + (milestone ? '<span class="milestone">' + escapeHtml(milestone.title) + "</span>" : "") + '<div class="assignees">' + task.assignees.slice(0, 3).map(avatar).join("") + "</div></div></article>";
 }
 function updateFilterUi() {
@@ -277,14 +317,28 @@ function openTask(taskId) {
   const milestone = state.milestones.find(function (item) { return item.milestone_id === task.milestone_id; });
   const details = state.issueDetails.find(function (item) { return String(item.task_id) === String(task.task_id); });
   const names = task.assignees.length ? task.assignees.map(function (user) { return escapeHtml(user.github_username); }).join(", ") : "Unassigned";
-  const issueLabel = task.codex ? "Codex work" : task.issue_state === "closed" ? "Closed" : "Open";
-  const heading = task.codex ? "Shared team work · Codex" : "Issue #" + task.github_issue_number + " · " + escapeHtml(projectRepo());
+  const issueLabel = task.codex ? "Shared work item" : task.issue_state === "closed" ? "Closed" : "Open";
+  const heading = task.codex ? "CONES #" + task.codex_id : "Issue #" + task.github_issue_number + " · " + escapeHtml(projectRepo());
   const description = task.codex ? task.description : details && details.body || "No description available for this issue.";
-  const activity = task.codex ? '<p class="empty-detail">Registered by Codex CLI/API.</p>' : renderActivity(task.task_id);
-  const githubLink = task.codex ? "" : '<div class="modal-actions"><a class="control-button" href="' + escapeHtml(issueUrl(task)) + '" target="_blank" rel="noreferrer">Open in GitHub ↗</a></div>';
-  $("#modal-root").innerHTML = '<div class="modal-backdrop"><article class="modal issue-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><p class="modal-kicker">' + heading + '</p><h2 id="modal-title">' + escapeHtml(task.title) + '</h2><p class="issue-status"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span>' + issueLabel + '</p></div><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button></div><div class="issue-section"><h3>Description</h3><div class="issue-body markdown-body">' + renderMarkdown(description) + '</div></div><div class="issue-section"><h3>Activity</h3>' + activity + '</div><dl class="modal-details"><div class="detail-row"><dt>Project status</dt><dd>' + escapeHtml(status ? status.status_name : "Unknown") + '</dd></div><div class="detail-row"><dt>Assignees</dt><dd>' + names + '</dd></div><div class="detail-row"><dt>Milestone</dt><dd>' + escapeHtml(milestone ? milestone.title : "None") + '</dd></div></dl>' + githubLink + '</article></div>';
+  const activity = task.codex ? '<p class="empty-detail">Registered on the shared board.</p>' : renderActivity(task.task_id);
+  const taskAction = task.codex ? '<div class="modal-actions"><button type="button" class="control-button delete-button" data-action="delete-work-item" data-task-id="' + escapeHtml(task.task_id) + '">Delete work item</button></div>' : '<div class="modal-actions"><a class="control-button" href="' + escapeHtml(issueUrl(task)) + '" target="_blank" rel="noreferrer">Open in GitHub ↗</a></div>';
+  $("#modal-root").innerHTML = '<div class="modal-backdrop"><article class="modal issue-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><p class="modal-kicker">' + heading + '</p><h2 id="modal-title">' + escapeHtml(task.title) + '</h2><p class="issue-status"><span class="issue-state ' + (task.issue_state === "closed" ? "closed" : "") + '"></span>' + issueLabel + '</p></div><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button></div><div class="issue-section"><h3>Description</h3><div class="issue-body markdown-body">' + renderMarkdown(description) + '</div></div><div class="issue-section"><h3>Activity</h3>' + activity + '</div><dl class="modal-details"><div class="detail-row"><dt>Project status</dt><dd>' + escapeHtml(status ? status.status_name : "Unknown") + '</dd></div><div class="detail-row"><dt>Assignees</dt><dd>' + names + '</dd></div><div class="detail-row"><dt>Milestone</dt><dd>' + escapeHtml(milestone ? milestone.title : "None") + '</dd></div></dl>' + taskAction + '</article></div>';
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
+async function deleteWorkItem(taskId, button) {
+  const task = state.tasks.find(function (item) { return String(item.task_id) === String(taskId); });
+  if (!task || !task.codex) return;
+  if (!window.confirm("Delete CONES #" + task.codex_id + "? This cannot be undone.")) return;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/work-items/" + encodeURIComponent(task.codex_id), { method: "DELETE", headers: { "Content-Type": "application/json" } });
+    const data = await response.json().catch(function () { return {}; });
+    if (!response.ok) throw new Error(data.error || "Could not delete work item. Only board editors can delete items.");
+    state.tasks = state.tasks.filter(function (item) { return String(item.task_id) !== String(task.task_id); });
+    closeModal(); render(); showToast("CONES #" + task.codex_id + " deleted.");
+  } catch (error) { showToast(error.message); }
+  finally { button.disabled = false; }
+}
 async function persistStatus(task, previousStatusId) {
   if (!state.live) return;
   const status = state.statuses.find(function (item) { return item.status_id === task.status_id; });
@@ -304,7 +358,7 @@ function moveTask(taskId, statusId) {
   if (!task.codex && !authUser) { showToast("Sign in before changing a GitHub Issue status."); openAuthDialog(); return; }
   const previousStatusId = task.status_id; task.status_id = statusId; render();
   const status = state.statuses.find(function (item) { return item.status_id === statusId; });
-  showToast((task.codex ? "Codex work" : "#" + task.github_issue_number) + " moved to " + (status ? status.status_name : "new status"));
+  showToast((task.codex ? "CONES #" + task.codex_id : "#" + task.github_issue_number) + " moved to " + (status ? status.status_name : "new status"));
   persistStatus(task, previousStatusId).catch(function () { showToast("Could not save status change."); });
 }
 function handleAction(action, target) {
@@ -314,7 +368,8 @@ function handleAction(action, target) {
   if (action === "focus-search") searchInput.focus();
   if (action === "open-task") openTask(target.dataset.taskId || (target.closest(".card") || {}).dataset.taskId);
   if (action === "sort") { state.sort = state.sort === "issue" ? "title" : "issue"; render(); showToast(state.sort === "title" ? "Sorted by title" : "Sorted by issue number"); }
-  if (action === "add-item") showToast("New items are created in the source GitHub Project.");
+  if (action === "add-item") openWorkItemDialog(target.dataset.statusName);
+  if (action === "delete-work-item") deleteWorkItem(target.dataset.taskId, target);
   if (action === "add-view") showToast("Board is the available project view.");
   if (action === "more" || action === "column-menu") showToast("View settings are read-only.");
   if (action === "close-modal") closeModal();
@@ -347,6 +402,8 @@ async function init() {
   $("#auth-button").addEventListener("click", function () { if (authUser) signOut(); else openAuthDialog(); });
   $("#auth-cancel").addEventListener("click", function () { authDialog.close(); });
   authForm.addEventListener("submit", sendLoginLink);
+  $("#work-item-cancel").addEventListener("click", function () { workItemDialog.close(); });
+  workItemForm.addEventListener("submit", createWorkItem);
   await initAuth();
   try {
     let data;

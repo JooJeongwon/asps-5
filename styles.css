@@ -145,15 +145,21 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.2; letter-spac
 .detail-row dd { margin: 0; font-weight: 600; }
 .detail-row a { color: var(--blue); text-decoration: none; }
 .modal-actions { display: flex; justify-content: flex-end; margin-top: 24px; }
+.delete-button { color: var(--red); }
 .auth-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; color: var(--ink); background: white; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 16px 48px rgba(31,35,40,.25); }
-.auth-dialog::backdrop { background: rgba(31,35,40,.45); }
-.auth-form { display: grid; gap: 12px; padding: 24px; }
-.auth-form h2 { margin: 0; font-size: 20px; }
-.auth-form p { margin: 0; color: var(--muted); }
-.auth-form label { font-size: 13px; font-weight: 600; }
-.auth-form input { height: 36px; margin-top: -7px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; }
-.auth-form input:focus { border-color: var(--blue); outline: 3px solid rgba(9,105,218,.15); }
-.auth-message { min-height: 20px; font-size: 13px; }
+.work-item-dialog { width: min(480px, calc(100vw - 32px)); padding: 0; color: var(--ink); background: white; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 16px 48px rgba(31,35,40,.25); }
+.auth-dialog::backdrop, .work-item-dialog::backdrop { background: rgba(31,35,40,.45); }
+.auth-form, .work-item-form { display: grid; gap: 12px; padding: 24px; }
+.auth-form h2, .work-item-form h2 { margin: 0; font-size: 20px; }
+.auth-form p, .work-item-form p { margin: 0; color: var(--muted); }
+.auth-form label, .work-item-form label { font-size: 13px; font-weight: 600; }
+.auth-form input, .work-item-form input, .work-item-form select, .work-item-form textarea { width: 100%; margin-top: -7px; padding: 8px 10px; color: var(--ink); background: white; border: 1px solid var(--border); border-radius: 6px; }
+.auth-form input, .work-item-form input, .work-item-form select { height: 36px; }
+.work-item-form textarea { resize: vertical; }
+.auth-form input:focus, .work-item-form input:focus, .work-item-form select:focus, .work-item-form textarea:focus { border-color: var(--blue); outline: 3px solid rgba(9,105,218,.15); }
+.auth-message, .work-item-message { min-height: 20px; font-size: 13px; }
+.work-item-form .form-hint { margin-top: -7px; font-size: 13px; }
+.work-item-form [type="submit"]:disabled { cursor: wait; opacity: .65; }
 .auth-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .auth-submit { color: white; background: var(--blue); border-color: var(--blue); }
 .auth-submit:hover { color: white; background: #0550ae; }

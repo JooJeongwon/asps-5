@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0d1117">
     <title>CONES · Projects</title>
-    <link rel="stylesheet" href="./styles.css?v=20261019-1">
+    <link rel="stylesheet" href="./styles.css?v=20261026-1">
     <script src="./config.js?v=20261013-1" defer></script>
-    <script src="./app.js?v=20261019-1" defer></script>
+    <script src="./app.js?v=20261026-1" defer></script>
   </head>
   <body>
     <header class="global-header">
@@ -104,6 +104,23 @@
         <div class="auth-form-actions">
           <button class="control-button" type="button" id="auth-cancel">취소</button>
           <button class="control-button auth-submit" type="submit">로그인 링크 보내기</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="work-item-dialog" class="work-item-dialog" aria-labelledby="work-item-heading">
+      <form id="work-item-form" class="work-item-form">
+        <h2 id="work-item-heading">Add team work</h2>
+        <p class="form-hint">Saved to the shared team board. Do not add sensitive information.</p>
+        <label for="work-item-title">Title</label>
+        <input id="work-item-title" type="text" maxlength="200" required>
+        <label for="work-item-description">Description</label>
+        <textarea id="work-item-description" rows="5" maxlength="10000"></textarea>
+        <label for="work-item-status">Status</label>
+        <select id="work-item-status" required></select>
+        <p id="work-item-message" class="work-item-message" aria-live="polite"></p>
+        <div class="auth-form-actions">
+          <button class="control-button" type="button" id="work-item-cancel">Cancel</button>
+          <button class="control-button auth-submit" id="work-item-submit" type="submit">Add to board</button>
         </div>
       </form>
     </dialog>

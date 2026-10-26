@@ -70,7 +70,7 @@ async function validStatus(name) {
 }
 
 async function api(request, response, url) {
-  if (["POST", "PATCH"].includes(request.method)) {
+  if (["POST", "PATCH", "DELETE"].includes(request.method)) {
     if (request.headers.origin && request.headers.origin !== "http://" + request.headers.host) throw Object.assign(new Error("Cross-origin write denied"), { status: 403 });
     if (!(request.headers["content-type"] || "").startsWith("application/json")) throw Object.assign(new Error("Content-Type must be application/json"), { status: 415 });
   }
@@ -87,6 +87,11 @@ async function api(request, response, url) {
     return rows[0];
   }
   const workItem = url.pathname.match(/^\/api\/work-items\/(\d+)$/);
+  if (request.method === "DELETE" && workItem) {
+    const rows = await db("codex_work_items", { id: "eq." + workItem[1] }, "DELETE");
+    if (!rows || !rows[0]) throw Object.assign(new Error("Work item not found or deletion denied"), { status: 404 });
+    return rows[0];
+  }
   if (request.method === "PATCH" && workItem) {
     const body = await jsonBody(request);
     const status_name = await validStatus(body.status_name);
